@@ -20,6 +20,7 @@ var bodyFontSize = 20;
 var otherFontSize = 16;
 
 var styleTable = {};
+var tableStyles = {};
 
 onmessage = function(e) {
     
@@ -55,6 +56,7 @@ function processPPTX(data) {
     var filesInfo = getContentTypes(zip);
     var slideSize = getSlideSize(zip);
     themeContent = loadTheme(zip);
+    tableStyles = loadTableStyles(zip);
     var slideList = getSlidesList(zip);
     
     self.postMessage({
@@ -187,6 +189,32 @@ function loadTheme(zip) {
     }
     
     return readXmlFile(zip, "ppt/" + themeURI);
+}
+
+function loadTableStyles(zip) {
+    var styles = {};
+    if (zip.file("ppt/tableStyles.xml") === null) {
+        return styles;
+    }
+    var content = readXmlFile(zip, "ppt/tableStyles.xml");
+    var styleList = content["a:tblStyleLst"]["a:tblStyle"];
+    if (styleList === undefined) {
+        return styles;
+    }
+    if (styleList.constructor !== Array) {
+        styleList = [styleList];
+    }
+    for (var i = 0; i < styleList.length; i++) {
+        var styleId = styleList[i]["attrs"]["styleId"];
+        var firstRowFill = getSolidFill(
+            getTextByPathList(styleList[i], ["a:firstRow", "a:tcStyle", "a:fill", "a:solidFill"])
+        );
+        if (firstRowFill !== undefined) {
+            firstRowFill = "#" + firstRowFill;
+        }
+        styles[styleId] = {"firstRowFill": firstRowFill};
+    }
+    return styles;
 }
 
 function processSingleSlide(zip, sldFileName, index, slideSize) {
@@ -1034,36 +1062,70 @@ function genGlobalCSS() {
 }
 
 function genTable(node, warpObj) {
-    
+
     var order = node["attrs"]["order"];
     var tableNode = getTextByPathList(node, ["a:graphic", "a:graphicData", "a:tbl"]);
     var xfrmNode = getTextByPathList(node, ["p:xfrm"]);
-    var tableHtml = "<table style='" + getPosition(xfrmNode, undefined, undefined) + getSize(xfrmNode, undefined, undefined) + " z-index: " + order + ";'>";
+    var pos = getPosition(xfrmNode, undefined, undefined);
+    var size = getSize(xfrmNode, undefined, undefined);
+
+    // If width is missing, calculate from grid columns
+    if (size.indexOf("width") === -1) {
+        var gridCols = getTextByPathList(tableNode, ["a:tblGrid", "a:gridCol"]);
+        var widthEMU = 0;
+        if (gridCols !== undefined) {
+            if (gridCols.constructor === Array) {
+                for (var k = 0; k < gridCols.length; k++) {
+                    widthEMU += parseInt(gridCols[k]["attrs"]["w"]);
+                }
+            } else {
+                widthEMU += parseInt(gridCols["attrs"]["w"]);
+            }
+        }
+        var widthPX = widthEMU * 96 / 914400;
+        if (!isNaN(widthPX)) {
+            size += "width:" + widthPX + "px;";
+        }
+    }
+
+    var tableCss = pos + size + " z-index: " + order + ";table-layout:fixed;border-collapse:collapse;";
+    var tableHtml = "<table style='" + tableCss + "'>";
+
+    var styleId = getTextByPathList(tableNode, ["a:tblPr", "a:tableStyleId"]);
+    var firstRowFill = undefined;
+    if (styleId !== undefined && tableStyles[styleId] !== undefined) {
+        firstRowFill = tableStyles[styleId]["firstRowFill"];
+    }
     
     var trNodes = tableNode["a:tr"];
     if (trNodes.constructor === Array) {
         for (var i=0; i<trNodes.length; i++) {
             tableHtml += "<tr>";
             var tcNodes = trNodes[i]["a:tc"];
-            
+
             if (tcNodes.constructor === Array) {
                 for (var j=0; j<tcNodes.length; j++) {
-                    var text = genTextBody(tcNodes[j]["a:txBody"], undefined, undefined, undefined, warpObj);        
+                    var text = genTextBody(tcNodes[j]["a:txBody"], undefined, undefined, undefined, warpObj);
                     var rowSpan = getTextByPathList(tcNodes[j], ["attrs", "rowSpan"]);
                     var colSpan = getTextByPathList(tcNodes[j], ["attrs", "gridSpan"]);
                     var vMerge = getTextByPathList(tcNodes[j], ["attrs", "vMerge"]);
                     var hMerge = getTextByPathList(tcNodes[j], ["attrs", "hMerge"]);
+                    var tdStyle = "";
+                    if (i === 0 && firstRowFill !== undefined) {
+                        tdStyle = " style=\'background-color:" + firstRowFill + ";\'";
+                    }
                     if (rowSpan !== undefined) {
-                        tableHtml += "<td rowspan='" + parseInt(rowSpan) + "'>" + text + "</td>";
+                        tableHtml += "<td" + tdStyle + " rowspan='" + parseInt(rowSpan) + "'>" + text + "</td>";
                     } else if (colSpan !== undefined) {
-                        tableHtml += "<td colspan='" + parseInt(colSpan) + "'>" + text + "</td>";
+                        tableHtml += "<td" + tdStyle + " colspan='" + parseInt(colSpan) + "'>" + text + "</td>";
                     } else if (vMerge === undefined && hMerge === undefined) {
-                        tableHtml += "<td>" + text + "</td>";
+                        tableHtml += "<td" + tdStyle + ">" + text + "</td>";
                     }
                 }
             } else {
                 var text = genTextBody(tcNodes["a:txBody"]);
-                tableHtml += "<td>" + text + "</td>";
+                var tdStyle = (i === 0 && firstRowFill !== undefined) ? " style=\'background-color:" + firstRowFill + ";\'" : "";
+                tableHtml += "<td" + tdStyle + ">" + text + "</td>";
             }
             tableHtml += "</tr>";
         }
@@ -1073,11 +1135,13 @@ function genTable(node, warpObj) {
         if (tcNodes.constructor === Array) {
             for (var j=0; j<tcNodes.length; j++) {
                 var text = genTextBody(tcNodes[j]["a:txBody"]);
-                tableHtml += "<td>" + text + "</td>";
+                var tdStyle = (firstRowFill !== undefined) ? " style=\'background-color:" + firstRowFill + ";\'" : "";
+                tableHtml += "<td" + tdStyle + ">" + text + "</td>";
             }
         } else {
             var text = genTextBody(tcNodes["a:txBody"]);
-            tableHtml += "<td>" + text + "</td>";
+            var tdStyle = (firstRowFill !== undefined) ? " style=\'background-color:" + firstRowFill + ";\'" : "";
+            tableHtml += "<td" + tdStyle + ">" + text + "</td>";
         }
         tableHtml += "</tr>";
     }
