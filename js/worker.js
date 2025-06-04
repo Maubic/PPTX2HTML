@@ -55,15 +55,16 @@ function processPPTX(data) {
     var filesInfo = getContentTypes(zip);
     var slideSize = getSlideSize(zip);
     themeContent = loadTheme(zip);
+    var slideList = getSlidesList(zip);
     
     self.postMessage({
         "type": "slideSize",
         "data": slideSize
     });
     
-    var numOfSlides = filesInfo["slides"].length;
+    var numOfSlides = slideList.length;
     for (var i=0; i<numOfSlides; i++) {
-        var filename = filesInfo["slides"][i];
+        var filename = slideList[i];
         var slideHtml = processSingleSlide(zip, filename, i, slideSize);
         self.postMessage({
             "type": "slide",
@@ -122,6 +123,48 @@ function getSlideSize(zip) {
         "width": parseInt(sldSzAttrs["cx"]) * 96 / 914400,
         "height": parseInt(sldSzAttrs["cy"]) * 96 / 914400
     };
+}
+
+function getSlidesList(zip) {
+    var presContent = readXmlFile(zip, "ppt/presentation.xml");
+    var idListNode = presContent["p:presentation"]["p:sldIdLst"];
+    var idArray = [];
+    if (idListNode !== undefined) {
+        var sldId = idListNode["p:sldId"];
+        if (sldId.constructor === Array) {
+            for (var i = 0; i < sldId.length; i++) {
+                idArray.push(sldId[i]["attrs"]["r:id"]);
+            }
+        } else if (sldId !== undefined) {
+            idArray.push(sldId["attrs"]["r:id"]);
+        }
+    }
+
+    var presRelContent = readXmlFile(zip, "ppt/_rels/presentation.xml.rels");
+    var relArray = presRelContent["Relationships"]["Relationship"];
+    var rIdMap = {};
+    if (relArray.constructor === Array) {
+        for (var i = 0; i < relArray.length; i++) {
+            if (relArray[i]["attrs"]["Type"] === "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide") {
+                rIdMap[relArray[i]["attrs"]["Id"]] = relArray[i]["attrs"]["Target"].replace("../", "ppt/");
+            }
+        }
+    } else if (relArray["attrs"] !== undefined && relArray["attrs"]["Type"] === "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide") {
+        rIdMap[relArray["attrs"]["Id"]] = relArray["attrs"]["Target"].replace("../", "ppt/");
+    }
+
+    var slides = [];
+    for (var i = 0; i < idArray.length; i++) {
+        if (rIdMap[idArray[i]] !== undefined) {
+            var target = rIdMap[idArray[i]];
+            if (target.indexOf("ppt/") !== 0) {
+                target = "ppt/" + target;
+            }
+            slides.push(target);
+        }
+    }
+
+    return slides;
 }
 
 function loadTheme(zip) {
